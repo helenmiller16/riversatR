@@ -1,0 +1,16 @@
+# This contains basic data files (SWORD and GRWL) that all basins need
+DATA_DIR="C:\Data"
+
+# Specify the correct file for the continent
+SWORD_FILE="na_sword_reaches_v16.gpkg"
+# Boundary for the watershed of interest
+WATERSHED_FILE="Columbia_Basin_Watershed_Boundary.geojson"
+# Choose a unique name for the basin to keep track of files
+BASIN_NAME="columbia"
+# Local projected CRS (EPSG CODE)
+CRS="26910"
+
+# # To run for the entire continental US: 
+CRS="5070"
+BASIN_NAME="conus"
+WATERSHED_FILE="data/external/conus.gpkg"
