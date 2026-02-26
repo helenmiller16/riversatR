@@ -1,2 +1,4 @@
 data/external
 *.Rproj*
+.Rproj.user
+*.ipynb_checkpoints
