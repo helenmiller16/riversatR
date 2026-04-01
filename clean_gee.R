@@ -24,4 +24,19 @@ data[, `:=`(
   red_edge4 = SCALE*B8A
 )]
 data[, c("B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B8A")] <- NULL
-saveRDS(data, "data/external/conus/reflectance.rds")
+saveRDS(data, "data/external/conus/reflectance_raw.rds")
+
+# now cleanup 
+data <- readRDS("data/external/conus/reflectance_raw.rds")
+# use the image with the greatest pixel count when multiple observations in one day
+data$date <- as.Date(data$date)
+data <- data[pixel_count > 10]
+data[, max.pixel.count := max(pixel_count), c("reach_id", "date")]
+data_filtered <- data[pixel_count == max.pixel.count]
+filtered <- data_filtered[
+  , !c('azimuth', 'zenith', 'tile', 'cloud_cover', 'grwl_pixel_count', 'grwl_code')][
+    , c(lapply(.SD, mean)), by = c("reach_id", "date")]
+means <- data[
+  , !c('azimuth', 'zenith', 'tile', 'cloud_cover', 'grwl_pixel_count', 'grwl_code')][
+  , c(lapply(.SD, weighted.mean, w = pixel_count), pixel_count_total = sum(pixel_count)), by = c("reach_id", "date")]
+fwrite(filtered, "data/external/conus/reflectance.tsv")

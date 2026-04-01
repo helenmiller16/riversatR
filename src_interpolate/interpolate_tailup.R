@@ -1,7 +1,11 @@
-reaches <- read_sf("data/external/columbia/reaches.gpkg")
-reaches <-dplyr::rename(reaches, 
-                        reach_id_up = "rch_id_up", 
-                        reach_id_down = "rch_id_dn")
+# FOR TESTING
+if (FALSE) {
+  reaches <- read_sf("data/external/columbia/reaches.gpkg")
+  reaches <-dplyr::rename(reaches, 
+                          reach_id_up = "rch_id_up", 
+                          reach_id_down = "rch_id_dn")
+}
+
 
 # Reaches is a sf object with a row for each 
 # river reach, and the columns
@@ -81,6 +85,76 @@ make_graph <- function(reaches) {
                                    directed = TRUE, 
                                    force = TRUE)
 
+}
+
+# FOR TESTING
+if (FALSE) {
+  include <- st_read("data/external/columbia/region_include.gpkg")
+  reaches <- read_sf("data/external/columbia/reaches.gpkg")
+  reaches <-dplyr::rename(reaches, 
+                          reach_id_up = "rch_id_up", 
+                          reach_id_down = "rch_id_dn")
+  include <- st_transform(include, st_crs(reaches))
+  reaches <- reaches[include, ]
+  ref <- fread("data/external/conus/reflectance.tsv")
+  ref <- ref[reach_id %in% reaches$reach_id]
+  reaches_ <- reaches[reaches$reach_id %in% ref$reach_id, ]
+  
+  reflectance_dt <- ref
+  variables = c("coastal", 
+                "blue", 
+                "green", 
+                "red", 
+                "red_edge1", 
+                "red_edge2", 
+                "red_edge3", 
+                "red_edge4", 
+                "nir")
+  
+  
+}
+
+make_data <- function(
+  # data.table with columns: 
+  # reach_id lining up with reaches$reach_id
+  # date (POSIXct or Datetime object, coverted to Datetime)
+  # variables listed in 'variables'
+  reflectance_dt, 
+  graph, 
+  variables = c("coastal", 
+                "blue", 
+                "green", 
+                "red", 
+                "red_edge1", 
+                "red_edge2", 
+                "red_edge3", 
+                "red_edge4", 
+                "nir")) {
+  # We're going to start by trying daily predictions. 
+  ref <- copy(reflectance_dt)
+  ref[, date := as.Date(date)]
+  
+  nodes <- st_as_sf(sfnetworks::activate(graph, "nodes"))
+  edges <- st_as_sf(sfnetworks::activate(graph, "edges"))
+  edges_dt <- as.data.table(edges)
+  setindex(edges_dt, "reach_id")
+  # Give each node the value of the downstream edge
+  ref$node <- edges_dt[.(ref$reach_id), from, on = "reach_id"]
+  
+  n <- nrow(nodes)
+  v <- length(variables)
+  t <- as.numeric(max(ref$date) - min(ref$date)) +1
+  dims <- c(n, v, t)
+  
+  dates <- seq(min(ref$date), max(ref$date), by = "day")
+  
+  data_list <- lapply(dates, \(d) {
+    ref[date == d][.(1:n), on = "node"][, ..variables]
+  })
+  
+  # NEED TO GET FLOW STILL
+  
+  array(data = unlist(data_list))
 }
 
 
