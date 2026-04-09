@@ -1,8 +1,8 @@
 # This contains basic data files (SWORD and GRWL) that all basins need
-DATA_DIR="/home/jovyan/Data"
+DATA_DIR="C:/Data"
 
 # Specify the correct file for the continent
-SWORD_FILE="na_sword_reaches_v16.gpkg"
+SWORD_FILE="na_sword_reaches_v17b.gpkg"
 # Boundary for the watershed of interest
 WATERSHED_FILE="Columbia_Basin_Watershed_Boundary.geojson"
 # Choose a unique name for the basin to keep track of files
@@ -16,6 +16,6 @@ BASIN_NAME="conus"
 WATERSHED_FILE="data/external/conus.gpkg"
 
 # Mississippi
-# CRS="5070"
-# BASIN_NAME="mississippi"
-# WATERSHED_FILE="data/external/mississippi_basin.gpkg"
+CRS="5070"
+BASIN_NAME="mississippi_small"
+WATERSHED_FILE="data/external/mississippi_small/mississippi_small.gpkg"

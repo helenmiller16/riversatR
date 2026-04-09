@@ -1,6 +1,6 @@
 # FOR TESTING
 if (FALSE) {
-  reaches <- read_sf("data/external/columbia/reaches.gpkg")
+  reaches <- sf::read_sf("data/external/columbia/reaches.gpkg")
   reaches <-dplyr::rename(reaches, 
                           reach_id_up = "rch_id_up", 
                           reach_id_down = "rch_id_dn")
@@ -89,6 +89,8 @@ make_graph <- function(reaches) {
 
 # FOR TESTING
 if (FALSE) {
+  library(sf)
+  library(data.table)
   include <- st_read("data/external/columbia/region_include.gpkg")
   reaches <- read_sf("data/external/columbia/reaches.gpkg")
   reaches <-dplyr::rename(reaches, 
@@ -152,9 +154,26 @@ make_data <- function(
     ref[date == d][.(1:n), on = "node"][, ..variables]
   })
   
-  # NEED TO GET FLOW STILL
+  # get flow and sources
+  sources <- which(!1:nrow(nodes) %in% edges$to)
+  # use flow accumulation (facc) 
+  source_flow <- sapply(sources, \(s) edges[edges$from == s,]$facc)
   
-  array(data = unlist(data_list))
+  flow <- rep(0, n)
+  flow[sources] <- source_flow
+  for (source in sources) {
+    # get list of all downstream points
+    connected <- sapply(1:nrow(nodes), 
+                        \(x) ifelse(source == x, 0, igraph::edge_connectivity(graph, source, x)))
+    # add source flow to all downstream points
+    flow <- flow + unlist(connected)*flow[source]
+  }
+  
+  
+  y_n_v_t <- array(data = unlist(data_list), dim = dims)
+  from_e <- edges$from
+  to_e <- edges$to
+  dist_e <- edges$length
 }
 
 
@@ -173,4 +192,9 @@ objective_function <- function(fun, data, params) {
   function(data) {
     fun(data, params)
   }
+}
+
+main <- function(reachs_sf, reflectance_dt) {
+  graph <- make_graph(reaches_sf)
+  data <- make_data(reflectance_dt, graph)
 }

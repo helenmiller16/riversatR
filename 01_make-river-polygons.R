@@ -10,13 +10,13 @@ basin_path <- Sys.getenv("WATERSHED_FILE")
 # https://zenodo.org/records/1297434
 grwl_mask_path <- file.path(Sys.getenv("DATA_DIR"), "GRWL_mask_V01.01")
 grwl_tile_path <- file.path(Sys.getenv("DATA_DIR"), "GRWL_tiles")
-grwl_basin_vrt <- file.path(basin_dir, paste0(basin_name, "_grwl.vrt"))
+grwl_basin_vrt <- file.path("data/external/conus", paste0("conus", "_grwl.vrt"))
 
 # SWORD (choose appropriate continent)
 # 10km reaches >30m wide. 
 # https://zenodo.org/records/10013982
 sword_path <- file.path(Sys.getenv("DATA_DIR"), 
-                        "SWORD_v16_gpkg", 
+                        "SWORD_v17b_gpkg", 
                         Sys.getenv("SWORD_FILE"))
 
 library(sf)
@@ -28,16 +28,17 @@ terraOptions(memfrac=.8)
 # Get reaches within the river basin
 basin <- read_sf(basin_path)
 reaches <- read_sf(sword_path)
-reaches <- reaches[reaches$width > 60, ]
+# reaches <- reaches[reaches$width > 60, ]
 if (!st_crs(basin) == st_crs(reaches)) {
   basin <- st_transform(basin, st_crs(reaches))
 }
-reaches <- st_intersection(reaches, basin)
+reaches <- reaches[basin,]
 write_sf(reaches, 
          file.path("data/external", basin_name, "reaches.gpkg"))
 
 
-if ( length(list.files(file.path(basin_dir, "grwl"))) < 52 ) {
+if ( #length(list.files(file.path("data/external/conus", "grwl"))) < 52 
+  FALSE) {
     # Use GRWL mask to create river polygons
     # First need to figure out which tiles to use
     if (!dir.exists(grwl_mask_path)) {
@@ -66,7 +67,7 @@ if ( length(list.files(file.path(basin_dir, "grwl"))) < 52 ) {
     
 }
 
-files <- list.files(file.path(basin_dir, "grwl"), full.names = TRUE)
+files <- list.files(file.path("data/external/conus/grwl", "grwl"), full.names = TRUE)
 rast_list <- lapply(files, rast)
 grwl_mask <- vrt(sprc(rast_list))
 
@@ -76,8 +77,8 @@ grwl_mask <- vrt(sprc(rast_list))
 reaches <- st_transform(reaches, crs)
 geoms <- st_geometry(reaches)
 geoms_buff <- pbapply::pblapply(1:nrow(reaches), \(i) {
-    # maximum width is half the reach length. 
-    width = min(as.numeric(st_length(reaches[i, ])/2), reaches$width[i]+2*sqrt(reaches$width_var[i]))
+    # maximum width is the reach length. 
+    width = min(as.numeric(st_length(reaches[i, ])), 5 * reaches$width)
     st_buffer(geoms[i], width)
 }) 
 geoms_buff_sfg <- lapply(geoms_buff, `[[`, 1)
@@ -114,17 +115,26 @@ get_polygon <- function(i) {
     # 180 = Lake/reservoir
     # 126 = Tidal rivers/delta
     # 86  = Canal
-    reach_mask <- (water_mask %in% c(86, 180, 255, 126)) & (closest_r == reach_id) & (buff_r == 1)
+    # Just buffer
+    reach_mask <- (closest_r == reach_id) & (buff_r == 1)
+    # GRWL
+    # reach_mask <- (water_mask %in% c(86, 180, 255, 126)) & (closest_r == reach_id) & (buff_r == 1)
     # make polygon
     p <- as.polygons(reach_mask)
-    p_ <- p[p[[1]][[1]] == 1, ] # Only include "true" polygon (it also makes an inverse of "false" values)
+    p[p[[1]][[1]] == 1, ] # Only include "true" polygon (it also makes an inverse of "false" values)
 }
 
-polygon_list <- pbapply::pblapply(1:nrow(reaches), get_polygon)
-water_polygons <- do.call(rbind, polygon_list)
-water_polygons$reach_id <- reaches$reach_id
-water_polygons$area <- expanse(water_polygons)
-writeVector(water_polygons, file.path(basin_dir, "water_polygons.gpkg"))
+water_polygon_buff_list <- pbapply::pblapply(1:nrow(reaches), get_polygon)
+water_polygon_buff <- do.call(rbind, water_polygon_buff_list)
+water_polygon_buff$reach_id <- reaches$reach_id
+writeVector(water_polygon_buff, file.path(basin_dir, "water_polygons_buffer.gpkg"))
+
+
+# polygon_list <- pbapply::pblapply(1:nrow(reaches), get_polygon)
+# water_polygons <- do.call(rbind, polygon_list)
+# water_polygons$reach_id <- reaches$reach_id
+# water_polygons$area <- expanse(water_polygons)
+# writeVector(water_polygons, file.path(basin_dir, "water_polygons.gpkg"))
 
 # ## make a quick figure for general exam thing
 # # first need a bbox to include

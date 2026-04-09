@@ -4,15 +4,50 @@
 # Pull Landsat data for one reach given an NHD id, GRWL id, SWOT id, or lat/lon
 # Currently only coordinates supported. 
 
+.landsat_url <- function(x) {
+  sub("s3://", "/vsis3/", x)
+}
+
+# include = water, land, both
+.landsat_qa_mask <- function(qa,
+                          include = "water") {
+  # Make masks
+  dilated_cloud <- 2 # bit 1
+  cirrus <- 4 # bit 2
+  cloud <- 8 # bit 3
+  cloud_shadow <- 16 # bit 4
+  snow <- 32 # bit 5
+  clear <- 64 # bit 6
+  water <- 128 # bit 7
+  
+  q <- terra::values(qa)
+  
+  m <- bitwAnd(q, cloud) == 0 & 
+    bitwAnd(q, cloud_shadow) == 0 & 
+    bitwAnd(q, dilated_cloud) == 0 & 
+    bitwAnd(q, cirrus) == 0 & 
+    bitwAnd(q, snow) == 0
+  if (include == "water") {
+    m <- bitwAnd(q, water) != 0
+  } else if (include == "land") {
+    m <- bitwAnd(q, water) == 0
+  }
+  mask <- terra::rast(qa)
+  terra::values(mask) <- m
+  mask
+}
+
 pull_landsat_one_reach <- function(
     # nhd_id = NULL, 
-    # grwl_id = NULL, 
-    # SWOT_id = NULL, 
-    coords = NULL, # c(lon, lat)
-    reach_polygons_file = NULL,
-    start_date, 
-    end_date, 
-    tolerance = 20) {
+  # grwl_id = NULL, 
+  # SWOT_id = NULL, 
+  coords = NULL, # c(lon, lat)
+  reach_polygons_file = NULL,
+  start_date, 
+  end_date, 
+  tolerance = 20, 
+  # max_cloud_cover = 100, # hardcoded because this didn't work in the function for some reason
+  bands = c("coastal", "blue", "green","red","nir08","swir16", "swir22")) {
   
   # reach_specified <- sum(c(!is.null(nhd_id), !is.null(grwl_id), !is.null(SWOT_id), !is.null(coords)))
   # if (reach_specified == 0) {
@@ -43,12 +78,8 @@ pull_landsat_one_reach <- function(
     AWS_REQUEST_PAYER = "requester",
     AWS_DEFAULT_REGION = "us-west-2"
   )
-  .landsat_url <- function(x) {
-    sub("s3://", "/vsis3/", x)
-  }
   
   # Get matching reach polygon
-  reach_polygons <- sf::read_sf(reach_polygons_file)
   reach_polygons$id <- 1:nrow(reach_polygons)
   location <- sf::st_transform(location, sf::st_crs(reach_polygons))
   # get closest reach
@@ -58,47 +89,63 @@ pull_landsat_one_reach <- function(
   }
   
   date_range <- paste0(format(start_date, "%Y-%m-%dT00:00:00Z"), 
-                 "/", 
-                 format(end_date, "%Y-%m-%dT00:00:00Z"))
+                       "/", 
+                       format(end_date, "%Y-%m-%dT00:00:00Z"))
   # pull landsat for that polygon
   stac_client <- rstac::stac("https://earth-search.aws.element84.com/v1")
   collection <- "landsat-c2-l2"
   items <- rstac::stac_search(stac_client,
-                       collections = collection,
-                       bbox = sf::st_bbox(sf::st_transform(polygon, "EPSG:4326")),
-                       datetime = date_range) |>
+                              collections = collection,
+                              bbox = sf::st_bbox(sf::st_transform(polygon, "EPSG:4326")),
+                              datetime = date_range) |>
     rstac::get_request() |>
     rstac::items_fetch() |> 
     rstac::items_filter(properties$`platform` %in% c("landsat-7", "landsat-8", "landsat-9")) |> 
-    rstac::items_filter(properties$`eo:cloud_cover` < 10)
+    rstac::items_filter(properties$`eo:cloud_cover` < 90)
   
-  # set up data frame to store results
-  assets_of_interest <- c("blue", "green","red","nir08","swir16", "swir22","qa_pixel")
-  data_list <- lapply(1:items_length(items), \(i) {
+  data_list <- pbapply::pblapply(1:rstac::items_length(items), \(i) {
+    
     item <- rstac::items_select(items, i)
+    b <- intersect(bands, rstac::items_assets(item))
+    # set up data frame to store results
+    assets_of_interest <- c(b, "qa_pixel")
     urls <- rstac::assets_url(item, assets_of_interest)
-    r <- terra::rast(landsat_url(urls))
+    r <- terra::rast(.landsat_url(urls))
     names(r) <- assets_of_interest
-    r <- crop(r, sf::st_transform(polygon, crs(r)))
+    if (terra::crs(polygon) != terra::crs(r)) {
+      polygon <- sf::st_transform(polygon, terra::crs(r))
+    }
+    r <- terra::crop(r, polygon)
     # remove cloudy values
-    qa_mask <- rsi::landsat_mask_function(r$qa_pixel, include = "water")
+    qa_mask <- .landsat_qa_mask(r$qa_pixel, include = "water")
+    # also exclude cells adjacent to masked-out cells
+    qa_mask <- terra::focal(qa_mask, matrix(1,3,3), all)
     # count the number of valid pixels
-    valid_pixels <- terra::zonal(qa_mask, vect(polygon), fun = sum, na.rm = TRUE)
+    valid_pixels <- terra::zonal(qa_mask, terra::vect(polygon), fun = sum, na.rm = TRUE)
     names(valid_pixels) <- "valid_pixels"
-    r <- terra::mask(r, qa_mask, maskvalues = FALSE)
-    band_medians <- terra::zonal(r, terra::vect(sf::st_transform(polygon, terra::crs(r))), fun = median, na.rm = TRUE)
-    band_medians["qa_pixel"] <- NULL
-    band_medians <- band_medians * 0.0000275 - 0.2
-    cbind(valid_pixels, band_medians)
+    if (valid_pixels > 0) {
+      r <- terra::mask(r, qa_mask, maskvalues = 0)
+      band_medians <- terra::zonal(r, terra::vect(sf::st_transform(polygon, terra::crs(r))), fun = median, na.rm = TRUE)
+      band_medians["qa_pixel"] <- NULL
+      band_medians <- band_medians * 0.0000275 - 0.2
+      cbind(valid_pixels, band_medians)
+    } else {
+      valid_pixels
+    }
+    
   })
   Sys.setenv(
     AWS_REQUEST_PAYER = AWS_REQUEST_PAYER,
     AWS_DEFAULT_REGION = AWS_DEFAULT_REGION
   )
-  data_dt <- data.table::rbindlist(data_list)
+  data_dt <- data.table::rbindlist(data_list, fill = TRUE)
   items_dt <- data.table::as.data.table(rstac::items_as_tibble(items))
-  data <- data.table::cbind(items_dt, data_dt)
+  data <- cbind(items_dt, data_dt)
   data$`processing:software` <- sapply(data$`processing:software`, \(x) paste(x, collapse = "_"))
   data$`proj:centroid` <- sapply(data$`proj:centroid`, \(x) paste(x, collapse = " "))
   data
 }
+
+
+# Plotting helpers
+# terra::plotRGB(r * .0000275 - .2, 3,2,1, stretch = "lin", zlim = c(0, .2))
