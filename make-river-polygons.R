@@ -25,16 +25,19 @@ library(matrixStats)
 
 terraOptions(memfrac=.8)
 
-# Get reaches within the river basin
-basin <- read_sf(basin_path)
-reaches <- read_sf(sword_path)
-reaches <- reaches[reaches$width > 60, ]
-if (!st_crs(basin) == st_crs(reaches)) {
-  basin <- st_transform(basin, st_crs(reaches))
+if (!file.exists(file.path("data/external", basin_name, "reaches.gpkg"))) {
+  reaches <- read_sf(sword_path)
+  reaches <- reaches[reaches$width > 60, ]
+  if (!st_crs(basin) == st_crs(reaches)) {
+    basin <- st_transform(basin, st_crs(reaches))
+  }
+  reaches <- st_intersection(reaches, basin)
+  write_sf(reaches, 
+           file.path("data/external", basin_name, "reaches.gpkg"))
+  
+} else {
+  reaches <- read_sf(file.path("data/external", basin_name, "reaches.gpkg")) 
 }
-reaches <- st_intersection(reaches, basin)
-write_sf(reaches, 
-         file.path("data/external", basin_name, "reaches.gpkg"))
 
 
 if ( length(list.files(file.path(basin_dir, "grwl"))) < 52 ) {
@@ -84,22 +87,28 @@ geoms_buff_sfg <- lapply(geoms_buff, `[[`, 1)
 reaches$buff_geom <- st_sfc(geoms_buff_sfg, crs= st_crs(geoms_buff[[1]]))
 
 # Create a polygon within each buffer which includes only 
-# water pixels from GRWL water mask which are >20m from shore 
-# (to help with edge effects from atmospheric correction)
+# water pixels from GRWL water mask. 
 
-
+# METHOD 1: 
+# Buffer it a bit though to make sure it captures the full river, 
+# I will filter to only water pixels later. 
+# I'll do this by dilating the grwl mask to expand 1 pixel into the shoreline
 get_polygon <- function(i) {
     reach_id = reaches[i,]$reach_id
+    print(as.character(reach_id))
     
     # Make mask of water pixels closest to reach and use it as template raster
-    water_mask <- crop(grwl_mask, geoms_buff[[i]])
-    buff_r <- rasterize(vect(geoms_buff[[i]]), water_mask)
+    grwl_mask_reach <- crop(grwl_mask, geoms_buff[[i]])
+    # dilate water mask to include more pixels at the edge and not miss any important ones
+    water_mask <- grwl_mask_reach %in% c(86, 180, 255, 126)
+    water_mask <- water_mask | focal(water_mask, fun = max) # do OR so I keep edge pixels
+    buff_r <- rasterize(vect(geoms_buff[[i]]), grwl_mask_reach)
     r <- buff_r
     
     # Make distance rasters for all overlapping polygons
     neighbors <- st_intersection(reaches, geoms_buff[[i]] )
     for (g in st_geometry(neighbors)) {
-        d <- rasterize(vect(g), water_mask)
+        d <- rasterize(vect(g), grwl_mask_reach)
         r <- c(r, distance(d))
     }
     # Make raster with index of closest reach
@@ -114,17 +123,59 @@ get_polygon <- function(i) {
     # 180 = Lake/reservoir
     # 126 = Tidal rivers/delta
     # 86  = Canal
-    reach_mask <- (water_mask %in% c(86, 180, 255, 126)) & (closest_r == reach_id) & (buff_r == 1)
+    reach_mask <- water_mask & (closest_r == reach_id) & (buff_r == 1)
     # make polygon
     p <- as.polygons(reach_mask)
-    p_ <- p[p[[1]][[1]] == 1, ] # Only include "true" polygon (it also makes an inverse of "false" values)
+    p[p[[1]][[1]] == 1, ] # Only include "true" polygon (it also makes an inverse of "false" values)
 }
+
+# METHOD 2: 
+# don't actually use GRWL mask, just make a buffer and make sure it doesn't overlap with adjacent buffers. 
+# This is what Gardner et al did. 
+get_polygon <- function(i) {
+  reach_id = reaches[i,]$reach_id
+  # print(as.character(reach_id))
+  
+  # Just get this to use as a template raster
+  grwl_mask_reach <- crop(grwl_mask, geoms_buff[[i]])
+  buff_r <- rasterize(vect(geoms_buff[[i]]), grwl_mask_reach)
+  r <- buff_r
+  # Make distance rasters for all overlapping polygons
+  neighbors <- st_intersection(reaches, geoms_buff[[i]] )
+  for (g in st_geometry(neighbors)) {
+    d <- rasterize(vect(g), grwl_mask_reach)
+    r <- c(r, distance(d))
+  }
+  # Make raster with index of closest reach
+  r <- r[[-1]]
+  # way faster than apply(x, 1, which.min)
+  closest_vect <- max.col(-as.matrix(r))
+  closest_r <- rast(d)
+  values(closest_r) <- neighbors$reach_id[closest_vect]
+  rm(closest_vect)
+  # 256 = No Data
+  # 255 = River
+  # 180 = Lake/reservoir
+  # 126 = Tidal rivers/delta
+  # 86  = Canal
+  reach_mask <- (closest_r == reach_id) & (buff_r == 1)
+  # make polygon
+  p <- as.polygons(reach_mask)
+  p[p[[1]][[1]] == 1, ] # Only include "true" polygon (it also makes an inverse of "false" values)
+}
+
 
 polygon_list <- pbapply::pblapply(1:nrow(reaches), get_polygon)
 water_polygons <- do.call(rbind, polygon_list)
 water_polygons$reach_id <- reaches$reach_id
 water_polygons$area <- expanse(water_polygons)
-writeVector(water_polygons, file.path(basin_dir, "water_polygons.gpkg"))
+
+# Remove great lakes
+great_lakes <- read_sf("data/external/great_lakes.gpkg")
+great_lakes <- st_transform(great_lakes, st_crs(water_polygons))
+in_lakes <- reaches[great_lakes,]
+water_polygons <- water_polygons[water_polygons$reach_id %in% in_lakes$reach_id]
+writeVector(water_polygons, file.path(basin_dir, "water_polygons_buffered.gpkg"))
 
 # ## make a quick figure for general exam thing
 # # first need a bbox to include
