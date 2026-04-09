@@ -10,13 +10,13 @@ basin_path <- Sys.getenv("WATERSHED_FILE")
 # https://zenodo.org/records/1297434
 grwl_mask_path <- file.path(Sys.getenv("DATA_DIR"), "GRWL_mask_V01.01")
 grwl_tile_path <- file.path(Sys.getenv("DATA_DIR"), "GRWL_tiles")
-grwl_basin_vrt <- file.path(basin_dir, paste0(basin_name, "_grwl.vrt"))
+grwl_basin_vrt <- file.path("data/external/conus", paste0("conus", "_grwl.vrt"))
 
 # SWORD (choose appropriate continent)
 # 10km reaches >30m wide. 
 # https://zenodo.org/records/10013982
 sword_path <- file.path(Sys.getenv("DATA_DIR"), 
-                        "SWORD_v16_gpkg", 
+                        "SWORD_v17b_gpkg", 
                         Sys.getenv("SWORD_FILE"))
 
 library(sf)
@@ -27,7 +27,7 @@ terraOptions(memfrac=.8)
 
 if (!file.exists(file.path("data/external", basin_name, "reaches.gpkg"))) {
   reaches <- read_sf(sword_path)
-  reaches <- reaches[reaches$width > 60, ]
+  # reaches <- reaches[reaches$width > 60, ]
   if (!st_crs(basin) == st_crs(reaches)) {
     basin <- st_transform(basin, st_crs(reaches))
   }
@@ -39,8 +39,8 @@ if (!file.exists(file.path("data/external", basin_name, "reaches.gpkg"))) {
   reaches <- read_sf(file.path("data/external", basin_name, "reaches.gpkg")) 
 }
 
-
-if ( length(list.files(file.path(basin_dir, "grwl"))) < 52 ) {
+if ( #length(list.files(file.path("data/external/conus", "grwl"))) < 52 
+  FALSE) {
     # Use GRWL mask to create river polygons
     # First need to figure out which tiles to use
     if (!dir.exists(grwl_mask_path)) {
@@ -69,7 +69,7 @@ if ( length(list.files(file.path(basin_dir, "grwl"))) < 52 ) {
     
 }
 
-files <- list.files(file.path(basin_dir, "grwl"), full.names = TRUE)
+files <- list.files(file.path("data/external/conus/grwl"), full.names = TRUE)
 rast_list <- lapply(files, rast)
 grwl_mask <- vrt(sprc(rast_list))
 
@@ -79,8 +79,8 @@ grwl_mask <- vrt(sprc(rast_list))
 reaches <- st_transform(reaches, crs)
 geoms <- st_geometry(reaches)
 geoms_buff <- pbapply::pblapply(1:nrow(reaches), \(i) {
-    # maximum width is half the reach length. 
-    width = min(as.numeric(st_length(reaches[i, ])/2), reaches$width[i]+2*sqrt(reaches$width_var[i]))
+    # maximum width is the reach length. 
+    width = min(as.numeric(st_length(reaches[i, ])), 5 * reaches$width)
     st_buffer(geoms[i], width)
 }) 
 geoms_buff_sfg <- lapply(geoms_buff, `[[`, 1)

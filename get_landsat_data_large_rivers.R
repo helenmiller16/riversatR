@@ -1,3 +1,8 @@
+terraOptions(memfrac=.8)
+
+
+## STEP 2: Pull data at reaches associated with my sensor locations. 
+
 # TODO: set up gdal config file
 # https://gdal.org/en/stable/user/configoptions.html#gdal-configuration-file
 
@@ -10,7 +15,7 @@
 
 # include = water, land, both
 .landsat_qa_mask <- function(qa,
-                          include = "water") {
+                             include = "water") {
   # Make masks
   dilated_cloud <- 2 # bit 1
   cirrus <- 4 # bit 2
@@ -149,3 +154,56 @@ pull_landsat_one_reach <- function(
 
 # Plotting helpers
 # terra::plotRGB(r * .0000275 - .2, 3,2,1, stretch = "lin", zlim = c(0, .2))
+
+
+# Plotting helpers
+# 4,3,2 for L8 (with coastal band)
+# 3,2,1 for L7. 
+#terra::plotRGB(terra::subset(r, b)* .0000275 - .2, 4,3,2, stretch = "lin", zlim = c(0, .2))
+
+
+# Get data matching metabolism site
+
+library(sf)
+library(data.table)
+source("pull_landsat_one_reach.R")
+reach_polygons_file <- "C:/github/river-sat/data/external/conus/water_polygons.gpkg"
+reach_polygons <- read_sf(reach_polygons_file)
+metab_data <- read_sf("C:/github/metabolism-mississippi/data/external/appling/sites_with_dates.gpkg")
+
+data_list <- lapply(1:nrow(metab_data), \(row) {
+  print(row)
+  d <- metab_data[row, ]
+  coords <- st_coordinates(d)[1, ]
+  start_date <- d$start_date
+  end_date <- d$end_date
+  bands <- c("coastal", "blue", "green","red","nir08","swir16", "swir22")
+  try(pull_landsat_one_reach(
+    coords = coords, 
+    reach_polygons = reach_polygons,
+    start_date = start_date, 
+    end_date = end_date, 
+    tolerance = 100, 
+    bands = bands))
+})
+saveRDS(data_list, "C:/github/river-sat/inst/data_list.rds")
+names(data_list) <- metab_data$site_name
+data_list2 <- lapply(names(data_list), \(n) {
+  d <- data_list[[n]]
+  if ("try-error" %in% class(d)) return(NULL)
+  d$site_name <- n
+  d
+})
+data <- rbindlist(data_list2)
+fwrite(data, "C:/github/metabolism-mississippi/data/external/reflectance/landsat_appling_sites_better.tsv")
+# m <- metab_data[grepl("baton", metab_data$long_name, ignore.case = TRUE), ]
+# coords <-  st_coordinates(m)[1, ]
+# start_date <- m$start_date
+# end_date <- m$end_date
+# 
+# br_data <- pull_landsat_one_reach(
+#   coords, 
+#   reach_polygons_file = "C:/github/river-sat/data/external/conus/water_polygons.gpkg",
+#   start_date, 
+#   end_date)
+# saveRDS(br_data, "C:/github/river-sat/inst/br_data.rds")
