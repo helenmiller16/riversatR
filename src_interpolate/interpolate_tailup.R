@@ -1,12 +1,4 @@
-# FOR TESTING
-if (FALSE) {
-  reaches <- sf::read_sf("data/external/columbia/reaches.gpkg")
-  reaches <-dplyr::rename(reaches, 
-                          reach_id_up = "rch_id_up", 
-                          reach_id_down = "rch_id_dn")
-}
-
-
+require(data.table)
 # Reaches is a sf object with a row for each 
 # river reach, and the columns
 # reach_id
@@ -16,105 +8,43 @@ if (FALSE) {
 # from_id or to_id may have multiple ids separated with a space
 # (This is the format of the SWOT dataset)
 make_graph <- function(reaches) {
+  nodes <- data.table::as.data.table(reaches)
+  nodes$node_id <- 1:nrow(nodes)
+  nodes$geom <- sf::st_line_interpolate(sf::st_transform(nodes$geom, "EPSG:5070"), .5, TRUE)
   
-  edges <- as.data.table(reaches)
+  # Make edges
+  from <- lapply(nodes$reach_id_up, \(e) as.numeric(strsplit(e, ' ')[[1]]))
+  to   <- nodes$reach_id
   
-  # Create "nodes" table by looping through all the 
-  # edges and adding nodes as needed. add node geometry
-  # from the ends of the edges. It won't be perfect 
-  # (e.g. edges may not necessarily line up with nodes) 
-  # but topology should be correct. 
-  n <- 0
-  edges$from <- 0
-  edges$to <- 0
-  edge_geometry <- lapply(edges$geom, \(g) g[[1]])
-  node_geometry <- list()
-  for (i in 1:nrow(edges)) {
-    edge <- edges[i, ]
-    from_e <- as.numeric(strsplit(edge$reach_id_up, " ")[[1]])
-    to_e <- as.numeric(strsplit(edge$reach_id_down, " ")[[1]])
-    
-    if (edge$from == 0) {
-      if (any(edges[reach_id %in% from_e]$to_node>0)){
-        if (length(from_e) > 1) {
-          stop("length(from_e) > 1")
-        }
-        edges[i]$from <- edges[reach_id %in% from_e]$to_node
-      } else {
-        n <- n + 1
-        edges[i]$from <- n
-        edges[reach_id %in% from_e]$to <- n
-        node_geometry <- c(node_geometry, list(st_point(edge_geometry[[i]][1, ])))
-      }
-    }
-    
-    if (edge$to == 0) {
-      if (sum(edges$reach_id %in% to_e) > 0) {
-        if (any(edges[reach_id %in% to_e]$from>0)) {
-          if (length(to_e) > 1) {
-            stop("length(to_e) > 1")
-          }
-          edges[i]$to <- edges[reach_id %in% to_e]$from
-        } else {
-          n <- n + 1
-          edges[i]$to <- n
-          edges[reach_id %in% to_e]$from <- n
-          node_geometry <- c(node_geometry, list(st_point(edge_geometry[[i]][nrow(edge_geometry[[i]]), ])))
-        }
-      } else {
-        n <- n + 1
-        edges[i]$to <- n
-        node_geometry <- c(node_geometry, list(st_point(edge_geometry[[i]][nrow(edge_geometry[[i]]), ])))
-      }
-    }
-  }
+  from <- c(from, nodes$reach_id)
+  to   <- c(to, lapply(nodes$reach_id_down, \(e) as.numeric(strsplit(e, ' ')[[1]])))
   
-  # Make nodes shapefile
-  N <- max(c(edges$from, edges$to))
-  nodes <- st_sf(node_id = 1:N, geometry = st_sfc(node_geometry))
+  edge_list <- mapply(\(f, t) {
+    data.table::data.table(expand.grid(f, t))
+  }, from, to, SIMPLIFY = FALSE)
+  edges <- data.table::rbindlist(edge_list)
+  names(edges) <- c("from", "to")
+  edges <- edges[!duplicated(edges)]
   
-  # Check for any edges which don't line up with nodes. 
-  # First check for nodes which are far apart
-  st_crs(nodes) <- st_crs(reaches)
-  nodes_proj <- st_transform(nodes, "EPSG:5070")
-  edges_distance <- st_distance(nodes[edges$from,], nodes[edges$to,], by_element = TRUE)
-  edges$geom <- st_sfc(lapply(edges$geom, st_cast, to = "LINESTRING"))
-  edges <- st_as_sf(edges, crs = st_crs(reaches))
-  sfnetworks::sfnetwork(nodes, 
-                                   edges, 
-                                   directed = TRUE, 
-                                   force = TRUE)
-
+  # remove edges which come from reaches not in the network
+  edges <- edges[from %in% nodes$reach_id]
+  edges <- edges[to %in% nodes$reach_id]
+  
+  # Calculate length of each edge. Since the go from the center of two
+  # reaches, it is the mean length of those two reaches
+  edges$from_len <- nodes[.(edges$from), on = "reach_id"]$reach_len
+  edges$to_len <- nodes[.(edges$to), on = "reach_id"]$reach_len
+  edges[, length := (from_len + to_len)/2]
+  edges$from <- nodes[.(edges$from), on = "reach_id"]$node_id
+  edges$to <- nodes[.(edges$to), on = "reach_id"]$node_id
+  
+  sfnetworks::sfnetwork(
+    sf::st_as_sf(nodes), 
+    edges, 
+    directed = TRUE)
 }
 
-# FOR TESTING
-if (FALSE) {
-  library(sf)
-  library(data.table)
-  include <- st_read("data/external/columbia/region_include.gpkg")
-  reaches <- read_sf("data/external/columbia/reaches.gpkg")
-  reaches <-dplyr::rename(reaches, 
-                          reach_id_up = "rch_id_up", 
-                          reach_id_down = "rch_id_dn")
-  include <- st_transform(include, st_crs(reaches))
-  reaches <- reaches[include, ]
-  ref <- fread("data/external/conus/reflectance.tsv")
-  ref <- ref[reach_id %in% reaches$reach_id]
-  reaches_ <- reaches[reaches$reach_id %in% ref$reach_id, ]
-  
-  reflectance_dt <- ref
-  variables = c("coastal", 
-                "blue", 
-                "green", 
-                "red", 
-                "red_edge1", 
-                "red_edge2", 
-                "red_edge3", 
-                "red_edge4", 
-                "nir")
-  
-  
-}
+
 
 make_data <- function(
   # data.table with columns: 
@@ -127,66 +57,109 @@ make_data <- function(
                 "blue", 
                 "green", 
                 "red", 
-                "red_edge1", 
-                "red_edge2", 
-                "red_edge3", 
-                "red_edge4", 
-                "nir")) {
-  # We're going to start by trying daily predictions. 
+                "nir08", 
+                "swir16", 
+                "swir22"), 
+  # Time step/interval. If there are multiple observations at a site
+  # within a time interval take the mean. 
+  time_interval = 8, 
+  # weight_variable is a column in the graph nodes object to be used for 
+  # weighting inputs at confluences (e.g. contributing area). 
+  # If NA, weights will be the number of upstream confluences. 
+  # TODO: allow this to vary over time (and be related to discharge)
+  weight_variable = "facc" # facc is flow accumulation in SWOT v17b
+  ) {
   ref <- copy(reflectance_dt)
   ref[, date := as.Date(date)]
   
   nodes <- st_as_sf(sfnetworks::activate(graph, "nodes"))
-  edges <- st_as_sf(sfnetworks::activate(graph, "edges"))
-  edges_dt <- as.data.table(edges)
-  setindex(edges_dt, "reach_id")
-  # Give each node the value of the downstream edge
-  ref$node <- edges_dt[.(ref$reach_id), from, on = "reach_id"]
-  
+  nodes_dt <- data.table::as.data.table(nodes)
+  edges_dt <- data.table::as.data.table(sfnetworks::activate(graph, "edges"))
+  ref$node_id <- nodes_dt[.(ref$reach_id), node_id, on = "reach_id"]
   n <- nrow(nodes)
   v <- length(variables)
-  t <- as.numeric(max(ref$date) - min(ref$date)) +1
+  t <- trunc(as.numeric(max(ref$date) - min(ref$date))/time_interval) +1
   dims <- c(n, v, t)
   
-  dates <- seq(min(ref$date), max(ref$date), by = "day")
+  dates <- seq(min(ref$date), max(ref$date), by = time_interval)
   
   data_list <- lapply(dates, \(d) {
-    ref[date == d][.(1:n), on = "node"][, ..variables]
+    days <- seq(d, by = 1, length.out = time_interval)
+    ref[date %in% days][
+      , lapply(.SD, mean, na.rm = TRUE), node_id][
+        .(1:n), on = "node_id"][,..variables]
   })
   
-  # get flow and sources
-  sources <- which(!1:nrow(nodes) %in% edges$to)
-  # use flow accumulation (facc) 
-  source_flow <- sapply(sources, \(s) edges[edges$from == s,]$facc)
   
-  flow <- rep(0, n)
-  flow[sources] <- source_flow
-  for (source in sources) {
-    # get list of all downstream points
-    connected <- sapply(1:nrow(nodes), 
-                        \(x) ifelse(source == x, 0, igraph::edge_connectivity(graph, source, x)))
-    # add source flow to all downstream points
-    flow <- flow + unlist(connected)*flow[source]
+  
+  if (is.na(weight_variable)) {
+    # get flow and sources
+    sources <- which(!1:nrow(nodes) %in% edges_dt$to)
+    # use flow accumulation (facc) 
+    source_flow <- sapply(sources, \(s) nodes_dt[node_id == s]$facc)
+    flow <- rep(0, n)
+    flow[sources] <- source_flow
+    # This step takes a while for large graphs
+    for (source in sources) {
+      # get list of all downstream points
+      connected <- sapply(1:nrow(nodes), 
+                          \(x) ifelse(source == x, 0, igraph::edge_connectivity(graph, source, x)))
+      # add source flow to all downstream points
+      flow <- flow + unlist(connected)*flow[source]
+    }
+  } else {
+    flow <- nodes_dt[, ..weight_variable]
   }
   
   
-  y_n_v_t <- array(data = unlist(data_list), dim = dims)
-  from_e <- edges$from
-  to_e <- edges$to
-  dist_e <- edges$length
+  list(
+    y_n_v_t = array(data = unlist(data_list), dim = dims),
+    from_e = edges_dt$from,
+    to_e = edges_dt$to,
+    dist_e = edges_dt$length,
+    flow_n = flow
+  )
+}
+
+
+# FOR TESTING
+if (FALSE) {
+  library(sf)
+  library(data.table)
+  reaches <- sf::read_sf("data/external/mississippi_small/reaches.gpkg")
+  reaches <-dplyr::rename(reaches, 
+                          reach_id_up = "rch_id_up", 
+                          reach_id_down = "rch_id_dn")
+  reflectance_dt <- fread("data/external/mississippi_small/landsat_2015_10_01-2016_10-01.csv")
+  variables = c("coastal", 
+                "blue", 
+                "green", 
+                "red", 
+                "nir08", 
+                "swir16", 
+                "swir22")
+  graph <- make_graph(reaches)
+  data <- make_data(reflectance_dt, 
+                    graph, 
+                    variables = variables,
+                    time_interval = 8, 
+                    weight_variable = "facc")
+  # PARAMS? 
+  
 }
 
 
 tailup_no_covariates <- function(data, params) {
   # data = list with : 
     # y_n_v_t: array where dim 1 is location, dim 2 is variable, dim 3 is time.
-    # from_e length n-1
-    # to_e length n-1
-    # dist_e length n-1
-    # flow_n length n
+    # from_e length e (edges)
+    # to_e length e (edges)
+    # dist_e length e (edges)
+    # flow_n length n (nodes)
   # params = list with 
   
 }
+
 
 objective_function <- function(fun, data, params) {
   function(data) {
