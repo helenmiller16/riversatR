@@ -161,20 +161,30 @@ get_polygon <- function(i) {
   reach_mask <- (closest_r == reach_id) & (buff_r == 1)
   # make polygon
   p <- as.polygons(reach_mask)
-  p[p[[1]][[1]] == 1, ] # Only include "true" polygon (it also makes an inverse of "false" values)
+  p_ <- p[p[[1]][[1]] == 1, ] # Only include "true" polygon (it also makes an inverse of "false" values)
+  # Get number of water pixels
+  grwl_pixels <- sum(values(grwl_mask_reach > 0 & reach_mask), na.rm = TRUE)
+  # get reach class
+  freq <- table(values(grwl_mask_reach)[values(grwl_mask_reach) > 0 & values(reach_mask)])
+  grwl_type <- as.integer(names(freq)[which.max(freq)])
+  list(p_, grwl_pixels, grwl_type)
 }
 
-
-polygon_list <- pbapply::pblapply(1:nrow(reaches), get_polygon)
+result_list <- pbapply::pblapply(1:nrow(reaches), get_polygon)
+polygon_list <- lapply(result_list, \(x) x[[1]])
+grwl_pixels_list <- lapply(result_list, \(x) x[[2]])
+grwl_type_list <- lapply(result_list, \(x) x[[3]])
 water_polygons <- do.call(rbind, polygon_list)
 water_polygons$reach_id <- reaches$reach_id
+water_polygons$grwl_pixels <- unlist(grwl_pixels_list)
+water_polygons$grwl_type <- unlist(grwl_type_list)
 water_polygons$area <- expanse(water_polygons)
 
 # Remove great lakes
 great_lakes <- read_sf("data/external/great_lakes.gpkg")
 great_lakes <- st_transform(great_lakes, st_crs(water_polygons))
 in_lakes <- reaches[great_lakes,]
-water_polygons <- water_polygons[water_polygons$reach_id %in% in_lakes$reach_id]
+water_polygons <- water_polygons[!water_polygons$reach_id %in% in_lakes$reach_id, ]
 writeVector(water_polygons, file.path(basin_dir, "water_polygons_buffered.gpkg"))
 
 # ## make a quick figure for general exam thing
