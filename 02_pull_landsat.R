@@ -8,10 +8,12 @@ BANDS   <- c("coastal", "blue", "green", "red", "nir08", "swir16", "swir22")
 COLUMNS <- c("valid_pixels", "eo:cloud_cover")
 
 # PARAMETERS FOR CLEANED FILE ----- 
-# Remove observations with fewer pixels than this. Keep this pretty low, 
-# and potentially use a higher number in downstream analysis. 
-# valid pixels > 0 are kept in raw files, this is just for the cleaned file. 
-MIN_VALID_PIXELS <- 10 
+# This is the number of pixels indicated as water from GRWL, which is 
+# essentially the maximum possible number of pixels available. 
+MIN_GRWL_PIXELS <- 100
+# Remove observations where the fraction of valid pixels to maximum (grwl_pixels) 
+# is less than this (note that raw files include any observations with >0 pixels)
+MIN_VALID_PIXEL_FRACTION = .1
 # Cleaned data file name
 CLEANED_FN <- file.path(basin_dir, "landsat_2015_10_01-2016_10-01.csv")
 
@@ -27,7 +29,7 @@ if (!dir.exists(output_dir)) dir.create(output_dir)
 files <- list.files(output_dir)
 reaches_done <- sub("\\.csv", "", files)
 water_polygons <- terra::vect("data/external/mississippi_small/water_polygons_buffered.gpkg")
-water_polygons <- water_polygons[water_polygons$grwl_pixels > 100, ]
+water_polygons <- water_polygons[water_polygons$grwl_pixels >= MIN_GRWL_PIXELS, ]
 water_polygons <- water_polygons[!as.character(water_polygons$reach_id) %in% as.numeric(reaches_done), ]
 # Cannot pass Spat objects to futures because they use external pointers. 
 water_polygons <- sf::st_as_sf(water_polygons)
@@ -53,7 +55,10 @@ for (i  in 1:n) {
   label = reach_id)
 }
 
-
+# wait until they're all resolved before continuing
+while(!all(sapply(out, resolved))) {
+  Sys.sleep(1)
+}
 ### WRITE SUMMARY FILE ----- 
 
 library(data.table)
@@ -67,6 +72,11 @@ rm(data_list)
 # allow NA coastal because it is not included in landsat 7
 bands_check <- BANDS[BANDS != "coastal"]
 data <- data[complete.cases(data[, ..bands_check])]
+
+# remove pixels with less than the specified amount
+water_polygons <- terra::vect("data/external/mississippi_small/water_polygons_buffered.gpkg")
+data <- merge(data, data.frame(water_polygons[c('reach_id', 'grwl_pixels')]))
+data <- data[valid_pixels/grwl_pixels > MIN_VALID_PIXEL_FRACTION]
 
 # use the image with the greatest pixel count when multiple observations in one day
 data$date <- as.Date(data$datetime)
