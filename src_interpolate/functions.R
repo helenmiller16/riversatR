@@ -168,17 +168,18 @@ make_data <- function(
 
 
 make_prec_tailup <- function(data, 
-                      params, 
-                      type = c("space", "spacetime", "both")[1], 
-                      precision = TRUE, 
-                      include_time = TRUE) {
+                      log_gamma1 = 0, 
+                      log_gamma2 = 0, 
+                      log_gamma3 = 0, 
+                      log_theta  = 0,
+                      type = c("space", "spacetime", "time")) {
   
   N <- dim(data$y_n_t_v)[1]
   E <- length(data$from_e)
   to_e <- data$to_e
   from_e <- data$from_e
   dist_e <- data$dist_e
-  theta <- exp(params$log_theta)
+  theta <- exp(log_theta)
   sources <- which(!1:N %in% to_e)
   
   path_e <- exp(-theta*dist_e) * data$weights_e
@@ -202,51 +203,55 @@ make_prec_tailup <- function(data,
     v_tailup[s] <- 1
   }
   t <- dim(data$y_n_t_v)[2]
+  I_t <- AD(Diagonal(t))
+  v_t <- rep(1, t)
+  n_pjoint <- N * t
   
-  if (type %in% c("spacetime", "all") & t > 1) {
-    
-    n_pjoint <- N * t
-    Lag1 <- AD(Matrix(data = 0, nrow = t, ncol = t, sparse = TRUE))
-    for (i in 1:(t-1)) {
-      Lag1[1+i, i] <- 1
-    }
-    I_t <- AD(Diagonal(t))
-    v_t <- rep(1, t)
-    
+  Lag1 <- AD(Matrix(data = 0, nrow = t, ncol = t, sparse = TRUE))
+  for (i in 1:(t-1)) {
+    Lag1[1+i, i] <- 1
+  }
+  
+  if ("spacetime" %in% type) {
     # dgmrf fails with more than 7 time steps if we try to 
     # evaluate this gamma2 term for some reason...? 
     gamma1 <- AD(Diagonal(n_pjoint), force = TRUE)
-    gamma1[cbind(1:n_pjoint, 1:n_pjoint)] <- exp(params$log_gamma1)
+    gamma1[cbind(1:n_pjoint, 1:n_pjoint)] <- exp(log_gamma1)
     # gamma3 <- AD(Diagonal(n_pjoint), force = TRUE)
-    # gamma3[cbind(1:n_pjoint, 1:n_pjoint)] <- exp(params$log_gamma3)
+    # gamma3[cbind(1:n_pjoint, 1:n_pjoint)] <- exp(log_gamma3)
     
     I_ptailup <- AD(Diagonal(N), force = TRUE)
     
-    P_joint <- gamma1 %*% kronecker(Path_tailup, Lag1)# spatiotemporal
-    
-    if (type == "all") {
-      gamma2 <- AD(Diagonal(n_pjoint), force = TRUE)
-      gamma2[cbind(1:n_pjoint, 1:n_pjoint)] <- exp(params$log_gamma2)
-      P_joint <- P_joint + gamma2 %*% kronecker(Path_tailup, I_t)
-    }
-    
-    v <- kronecker(v_tailup, v_t)
-    
-    I_pjoint <- AD(Diagonal(n_pjoint), force = TRUE)
-    
-  } else if (type == "space") {
-    n_pjoint <- N 
-    gamma1 <- AD(Diagonal(n_pjoint), force = TRUE)
-    gamma1[cbind(1:n_pjoint, 1:n_pjoint)] <- exp(params$log_gamma1)
-    P_joint <- gamma1 %*% Path_tailup
-    v <- v_tailup
-    I_pjoint <- (Diagonal(n_pjoint))
+    P_spacetime <- gamma1 %*% kronecker(Path_tailup, Lag1)# spatiotemporal
+  } else {
+    P_spacetime <- AD(Matrix(data = 0, nrow= n_pjoint, ncol = n_pjoint), force = TRUE)
   }
   
+  if ("space" %in% type) {
+    gamma2 <- AD(Diagonal(n_pjoint), force = TRUE)
+    gamma2[cbind(1:n_pjoint, 1:n_pjoint)] <- exp(log_gamma2)
+    P_space <- gamma2 %*% kronecker(Path_tailup, I_t)
+  } else {
+    P_space <- AD(Matrix(data = 0, nrow= n_pjoint, ncol = n_pjoint), force = TRUE)
+  }
+  
+  if ("time" %in% type) {
+    I_n <- AD(Diagonal(N), force = TRUE)
+    gamma3 <- AD(Diagonal(n_pjoint), force = TRUE)
+    gamma3[cbind(1:n_pjoint, 1:n_pjoint)] <- exp(log_gamma3)
+    P_time <- gamma3 %*% kronecker(I_n, Lag1)
+  } else {
+    P_time <- AD(Matrix(data = 0, nrow= n_pjoint, ncol = n_pjoint), force = TRUE)
+  }
+  
+  P_joint = P_spacetime + P_space + P_time
+  
+  v <- kronecker(v_tailup, v_t)
   v_inv <- 1/v
   V_inv <- AD(Diagonal(n_pjoint), force = TRUE)
   V_inv[cbind(1:n_pjoint, 1:n_pjoint)] <- v_inv
   
+  I_pjoint <- AD(Diagonal(n_pjoint), force = TRUE)
   t(I_pjoint-P_joint) %*% V_inv %*% (I_pjoint-P_joint)
 }
 
@@ -269,13 +274,17 @@ tailup_no_covariates <- function(data, params) {
   jnll_random <- 0
   jnll_fixed <- 0
   
-  Q <- make_prec_tailup(data, params, type = "all")
+  Q <- make_prec_tailup(data, 
+                        log_gamma1 = params$log_gamma1, 
+                        log_gamma2 = params$log_gamma2,
+                        log_theta = params$log_theta, 
+                        type = c("space", "spacetime"))
   jnll_random <-  - dgmrf(params$z_n_t, mu = 0, Q = Q, log = TRUE)
   
   x_n_t <- params$mu + params$z_n_t
   jnll_fixed <- jnll_fixed - sum(dnorm(as.vector(data$y_n_t_v), 
                                        mean = x_n_t, 
-                                       sd = exp(params$log_sigma), 
+                                       sd = exp(data$log_sigma), 
                                        log = TRUE), na.rm = TRUE)
   
 
@@ -287,7 +296,7 @@ tailup_no_covariates <- function(data, params) {
   jnll_random + jnll_fixed
 }
 
-tailup_iter_time <- function(data, params) {
+tailup_mean <- function(data, params) {
   # data = list with : 
   # y_n_t_v: array where dim 1 is location, dim 2 is time, dim 3 is variable.
   # from_e length e (edges)
@@ -306,21 +315,21 @@ tailup_iter_time <- function(data, params) {
   jnll_random <- 0
   jnll_fixed <- 0
   t <- dim(data$y_n_t_v)[2]
+  N <- dim(data$y_n_t_v)[1]
   
   
-  Q_space <- make_prec_tailup(data, params, type = "space")
+  Q_space <- make_prec_tailup(data, 
+                              log_theta = params$log_theta,
+                              type = "space")[1:N, 1:N]
   jnll_random <- jnll_random - dgmrf(params$w_n, 
                                      mu = 0,
                                      Q = Q_space, 
-                                     log = TRUE)
-  Q_spacetime <- make_prec_tailup(data, params, type = "spacetime")
-  jnll_random <- jnll_random - dgmrf(params$z_n_t, 
-                                     mu = 0, 
-                                     Q = Q_spacetime, 
-                                     log = TRUE)
+                                     log = TRUE, 
+                                     scale = 1/exp(params$log_gamma2))
+ 
   
   
-  x_n_t <- params$mu + rep(params$w_n, t) + params$z_n_t
+  x_n_t <- params$mu + rep(params$w_n, t) 
   jnll_fixed <- jnll_fixed - sum(dnorm(as.vector(data$y_n_t_v), 
                                        mean = x_n_t, 
                                        sd = exp(params$log_sigma), 
@@ -329,8 +338,81 @@ tailup_iter_time <- function(data, params) {
   
   REPORT(jnll_random)
   REPORT(jnll_fixed)
-  REPORT(Q)
+  REPORT(Q_space)
   REPORT(x_n_t)
+  REPORT(params$w_n)
+  ADREPORT(x_n_t)
+  jnll_random + jnll_fixed
+}
+
+tailup_iter_time <- function(data, params) {
+  # data = list with : 
+  # y_n_t_v: array where dim 1 is location, dim 2 is time, dim 3 is variable.
+  # from_e length e (edges)
+  # to_e length e (edges)
+  # dist_e length e (edges)
+  # weights_mx 
+  # params = list with 
+  # log_theta
+  # log_gamma1
+  # log_gamma2
+  # log_sigma
+  # log_rhoT
+  # mu
+  # w_n
+  # z_n_t # 
+  data$y_n_t_v <- OBS(data$y_n_t_v)
+  jnll_random <- 0
+  jnll_fixed <- 0
+  t <- dim(data$y_n_t_v)[2]
+  N <- dim(data$y_n_t_v)[1]
+  z_n_t <- array(params$z_n_t, dim = dim(data$y_n_t_v))
+  w_n <- params$w_n
+  
+  Q_space <- make_prec_tailup(data, 
+                              log_theta = params$log_theta,
+                              type = "space")[1:N, 1:N]
+  jnll_random <- jnll_random - dgmrf(w_n,
+                                     mu = 0,
+                                     Q = Q_space,
+                                     scale = exp(params$log_gamma2),
+                                     log = TRUE)
+  # Q_spacetime <- make_prec_tailup(data, params, type = "spacetime")
+  # jnll_random <- jnll_random - dgmrf(params$z_n_t, 
+  #                                    mu = 0, 
+  #                                    Q = Q_spacetime, 
+  #                                    log = TRUE)
+  
+  for (i in 1:t) {
+    if (i==1) {
+      jnll_random <- jnll_random - dgmrf(z_n_t[, i], 
+                                         mu = 0, 
+                                         Q=Q_space,
+                                         scale = (exp(params$log_gamma1)),
+                                         log = TRUE)
+    } else {
+      jnll_random <- jnll_random - dgmrf(z_n_t[, i] - exp(params$log_rhoT) * z_n_t[, i-1], 
+                                         mu = 0, 
+                                         Q=Q_space,
+                                         scale = exp(params$log_gamma1),
+                                         log = TRUE)
+    }
+  }
+  
+  
+  x_n_t <- params$mu + rep(w_n, t) + params$z_n_t
+  jnll_fixed <- jnll_fixed - sum(dnorm(as.vector(data$y_n_t_v), 
+                                       mean = x_n_t, 
+                                       sd = exp(params$log_sigma), 
+                                       log = TRUE), na.rm = TRUE)
+  
+  
+  REPORT(jnll_random)
+  REPORT(jnll_fixed)
+  REPORT(Q_space)
+  REPORT(x_n_t)
+  REPORT(z_n_t)
+  REPORT(w_n)
   ADREPORT(x_n_t)
   jnll_random + jnll_fixed
 }
