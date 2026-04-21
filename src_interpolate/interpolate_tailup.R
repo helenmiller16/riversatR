@@ -2,6 +2,8 @@ library(data.table)
 library(Matrix)
 library(RTMB)
 source(here::here("src_interpolate/functions.R"))
+TIME_INTERVAL <- 8
+VARIABLE <- "fai"
 reaches <- sf::read_sf("data/external/mississippi_small/reaches.gpkg")
 reaches <-dplyr::rename(reaches, 
                         reach_id_up = "rch_id_up", 
@@ -9,13 +11,16 @@ reaches <-dplyr::rename(reaches,
 reaches$reach_len <- reaches$reach_len / 1000 # convert to km
 reflectance_dt <- fread("data/external/mississippi_small/landsat_2015_10_01-2016_10-01.csv")
 reflectance_dt[, ndti := (red - green)/(red + green)]
-variables = c("ndti")
+reflectance_dt[, fai  := nir08 - (red + (swir16 - red)*(865-660)/(1600-660))]
+variables = VARIABLE
 graph <- make_graph(reaches)
 data_ <- make_data(reflectance_dt, 
                   graph, 
                   variables = variables,
-                  time_interval = 8, 
+                  time_interval = TIME_INTERVAL, 
                   weight_variable = "facc")
+time_step_date_map <- data_$time_step_date_map
+data_$time_step_date_map <- NULL
 y_n_t_v <- data_$y_n_t_v
 y_n_t_v[y_n_t_v > 1 | y_n_t_v < -1] <- NA
 
@@ -47,7 +52,7 @@ params <- list(log_theta = -5,
                log_gamma2 = 0, # space only
                # log_gamma3 = 0, # time only
                log_rhoT = -1,
-               log_sigma = 0, 
+               log_sigma = -3, 
                mu = 0, 
                z_n_t = rnorm(prod(dim(data$y_n_t_v))),
                w_n = rnorm(dim(data$y_n_t_v)[1])
@@ -61,13 +66,51 @@ f <- objective_function(tailup_iter_time,
 #                         params)
 
 
-obj <- MakeADFun(f, params, random = c("z_n_t", "w_n"))
+obj <- MakeADFun(f, params, random = c("z_n_t", "w_n"), 
+                 # map = list(log_sigma = factor(NA))
+                 )
 opt <- nlminb(obj$par, obj$fn, obj$gr)
 r <- obj$report()
 
 yhat <- r$x_n_t
 yhat <- array(yhat, dim = dim(data$y_n_t_v))
-saveRDS(yhat, "data/external/mississippi_small/results/yhat_iter_time_3.rds")
+plot(data$y_n_t_v, yhat)
+abline(0, 1, col= "blue")
+
+# Save yhat
+preds <- as.data.table(yhat)
+dates <- seq(min(reflectance_dt$date), max(reflectance_dt$date), by = TIME_INTERVAL) |> 
+  as.character()
+
+# names(preds) <- dates
+preds$node_id <- 1:nrow(preds)
+preds <- melt(preds, 
+              id.vars = "node_id", 
+              variable.name = "time_step", 
+              value.name = VARIABLE)
+preds[, time_step := as.numeric(sub("V", "", time_step))]
+preds[, date := dates[time_step]]
+nodes <- as.data.table(sfnetworks::activate(graph, "nodes"))
+preds$reach_id <- nodes[.(preds$node_id), on = "node_id"]$reach_id
+preds$date <- as.Date(preds$date)
+preds <- merge(preds, time_step_date_map, 
+               all.x = TRUE, 
+               allow.cartesian=TRUE)
+# for those with missing date_diff, use date_diff from closest reach
+p <- unique(preds[, .(reach_id, date_diff)])[, .(date_diff = min(date_diff)), reach_id]
+
+r_missing <- reaches[reaches$reach_id %in% p[is.na(date_diff)]$reach_id, ]
+r_not_missing <- reaches[!reaches$reach_id %in% p[is.na(date_diff)]$reach_id, ]
+r_not_missing$date_diff <- p[.(r_not_missing$reach_id), on = "reach_id"]$date_diff
+r_missing$date_diff <- r_not_missing$date_diff[sf::st_nearest_feature(r_missing, r_not_missing)]
+r <- rbind(r_missing, r_not_missing)
+preds <- merge(preds, sf::st_drop_geometry(r[, c("reach_id", "date_diff")]))
+preds[, date_diff := date_diff.x]
+preds[is.na(date_diff), date_diff := date_diff.y]
+preds$date_diff.x <- NULL
+preds$date_diff.y <- NULL
+
+fwrite(preds, "data/external/mississippi_small/results/yhat_iter_time_fai.csv")
 
 # bad_alloc here
 
@@ -123,14 +166,14 @@ p <- lapply(c("obs1", "obs2", "obs3",
 # 
 # 
 fig <- (p[[1]] + p[[2]] + p[[3]]) / (p[[4]] + p[[5]] + p[[6]])
-pdf("fitted_7_itertime2.pdf", width = 11, height = 8.5)
+pdf("fitted_7_itertime4.pdf", width = 11, height = 8.5)
 print(fig)
 dev.off()
 
 # Look at a few time series
-plot(data$y_n_t_v[1205,])
-plot(yhat[120,], type = "l")
-lines(yhat[1205,])
+
+plot(yhat[12,], type = "l")
+points(data$y_n_t_v[11,])
 
 
 # Uncertainty -----

@@ -113,7 +113,10 @@ make_data <- function(
   time_step <- rep(1:length(interval_date), each = time_interval, length.out = length(date))
   time_step <- data.table(date, time_step)
   ref <- merge(ref, time_step)
+  # ref[, date_diff := time_step[.(ref$date), on = "date"]$date - ref$date]
+  ref[, date_diff := as.numeric(date - interval_date[time_step])]
   ref_time_step <- ref[, lapply(.SD, mean, na.rm = TRUE), .(time_step, reach_id)]
+  ref_date_time_step <- ref[, .(date_diff = unique(date_diff)), .(reach_id)]
   # 
   # data_list <- lapply(dates, \(d) {
   #   days <- seq(d, by = 1, length.out = time_interval)
@@ -161,7 +164,8 @@ make_data <- function(
     from_e = edges_dt$from,
     to_e = edges_dt$to,
     dist_e = edges_dt$length,
-    weights_e = weights_e
+    weights_e = weights_e,
+    time_step_date_map = ref_date_time_step
     # weights_mx = weights_mx
   )
 }
@@ -401,10 +405,12 @@ tailup_iter_time <- function(data, params) {
   
   
   x_n_t <- params$mu + rep(w_n, t) + params$z_n_t
-  jnll_fixed <- jnll_fixed - sum(dnorm(as.vector(data$y_n_t_v), 
-                                       mean = x_n_t, 
-                                       sd = exp(params$log_sigma), 
-                                       log = TRUE), na.rm = TRUE)
+  jnll_fixed <- jnll_fixed - sum(dnorm(as.vector(data$y_n_t_v),
+                                       mean = x_n_t,
+                                       sd = exp(params$log_sigma),
+  log = TRUE), na.rm = TRUE)
+  
+  # jnll_fixed <- -sqrt(sum((data$y_n_v_t - x_n_t)^2))
   
   
   REPORT(jnll_random)
