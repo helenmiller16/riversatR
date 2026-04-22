@@ -4,7 +4,7 @@ library(RTMB)
 library(sem)
 source(here::here("src_interpolate/functions.R"))
 TIME_INTERVAL <- 8
-VARIABLES <- c("fai", "GPP")
+VARIABLES <- c("ndti")
 reaches <- sf::read_sf("data/external/mississippi_small/reaches.gpkg")
 reaches <-dplyr::rename(reaches, 
                         reach_id_up = "rch_id_up", 
@@ -20,14 +20,12 @@ data_ <- make_data(reflectance_dt,
                   graph, 
                   metab_dt = metab_dt,
                   variables = VARIABLES,
-                  sem = "fai -> GPP",
                   time_interval = TIME_INTERVAL, 
-                  weight_variable = "facc", 
-                  scale = "fai")
+                  weight_variable = "facc")
 time_step_date_map <- data_$time_step_date_map
 data_$time_step_date_map <- NULL
 y_n_t_v <- data_$y_n_t_v
-# y_n_t_v[, , 1][y_n_t_v[, , 1] > 1 | y_n_t_v[, , 1] < -1] <- NA
+y_n_t_v[, , 1][y_n_t_v[, , 1] > 1 | y_n_t_v[, , 1] < -1] <- NA
 
 data_$y_n_t_v <- y_n_t_v[, , , drop = FALSE]
 # data <- c(data_, 
@@ -63,14 +61,14 @@ data <- c(data_)
 # w_n # length T*K
 # z_n_t # length T*R*K
 params <- list(log_theta = -5, 
-               beta = 2,
-               log_rhoT = -1,
-               log_gamma_space = -1, 
-               log_gamma_spacetime = -1, 
+               # beta = 2,
+               log_rhoT = -.7,
+               log_gamma_space = -2, 
+               log_gamma_spacetime = -2, 
                # vectors same length as variables: 
-               log_v_sem = c(0,0), # variance for different parameters
-               mu = c(.1, 4), 
-               log_sigma = c(-1, 1),
+               # log_v_sem = c(0,0), # variance for different parameters
+               mu = c(-.1), 
+               log_sigma = c(-3),
                # random effects: 
                z_n_t = rnorm(prod(dim(data$y_n_t_v))),
                w_n = rnorm(dim(data$y_n_t_v)[1]*dim(data$y_n_t_v)[3])
@@ -95,7 +93,7 @@ plot(data$y_n_t_v, yhat)
 abline(0, 1, col= "blue")
 
 # Save yhat
-preds <- as.data.table(yhat)
+preds <- as.data.table(yhat[, , ])
 dates <- seq(min(reflectance_dt$date), max(reflectance_dt$date), by = TIME_INTERVAL) |> 
   as.character()
 
@@ -104,7 +102,7 @@ preds$node_id <- 1:nrow(preds)
 preds <- melt(preds, 
               id.vars = "node_id", 
               variable.name = "time_step", 
-              value.name = VARIABLE)
+              value.name = VARIABLES)
 preds[, time_step := as.numeric(sub("V", "", time_step))]
 preds[, date := dates[time_step]]
 nodes <- as.data.table(sfnetworks::activate(graph, "nodes"))
@@ -127,15 +125,15 @@ preds[is.na(date_diff), date_diff := date_diff.y]
 preds$date_diff.x <- NULL
 preds$date_diff.y <- NULL
 
-fwrite(preds, "data/external/mississippi_small/results/yhat_iter_time_fai.csv")
+fwrite(preds, "data/external/mississippi_small/results/yhat_iter_time_ndti.csv")
 
 # bad_alloc here
 
 # https://groups.google.com/g/tmb-users/c/9mlEeG_D430/m/EROcIHTaCAAJ
 h <- obj$env$spHess()
 sdr <- sdreport(obj)
-saveRDS(summary(sdr, "random"), paste0("data/external/mississippi_small/results/sdr_random_iter_time.rds"))
-saveRDS(summary(sdr, "fixed"), paste0("data/external/mississippi_small/results/sdr_fixed_iter_time.rds"))
+saveRDS(summary(sdr, "random"), paste0("data/external/mississippi_small/results/sdr_random_iter_time_ndti.rds"))
+saveRDS(summary(sdr, "fixed"), paste0("data/external/mississippi_small/results/sdr_fixed_iter_time_ndti.rds"))
 
 yhat1 <- readRDS("data/external/mississippi_small/results/yhat_1.rds")
 yhat2 <- readRDS("data/external/mississippi_small/results/yhat_4.rds")
