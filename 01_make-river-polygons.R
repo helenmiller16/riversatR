@@ -26,12 +26,38 @@ library(matrixStats)
 terraOptions(memfrac=.8)
 
 if (!file.exists(file.path("data/external", basin_name, "reaches.gpkg"))) {
+  basin <- read_sf(basin_path)
   reaches <- read_sf(sword_path)
   # reaches <- reaches[reaches$width > 60, ]
   if (!st_crs(basin) == st_crs(reaches)) {
     basin <- st_transform(basin, st_crs(reaches))
   }
   reaches <- st_intersection(reaches, basin)
+  
+  # Add dam info to reaches. 
+  # Use graph functionality, meaning we need to make a graph. 
+  # Use the function in src_interpolate/functions for this. 
+  source("src_interpolate/functions.R")
+  reaches <- dplyr::rename(reaches, 
+                           reach_id_down = "rch_id_dn", 
+                           reach_id_up = "rch_id_up")
+  graph <- make_graph(reaches)
+  library(igraph)
+  nodes <- as.data.table(sfnetworks::activate(graph, "nodes"))
+  edges <- as.data.table(sfnetworks::activate(graph, "edges"))
+  # matrix giving distance downstream from each dam to all nodes
+  dam_dist_list <- lapply(1:4, \(o) {
+    distances(graph, 
+              v = which(nodes$obstr_type == o), 
+              mode = "out", 
+              weights = edges$length)
+  })
+  dam_dist_list <- lapply(dam_dist_list, matrixStats::colMins)
+  nodes$dist_to_obst1 <- dam_dist_list[[1]]
+  nodes$dist_to_obst2 <- dam_dist_list[[2]]
+  nodes$dist_to_obst3 <- dam_dist_list[[3]]
+  nodes$dist_to_obst4 <- dam_dist_list[[4]]
+  reaches <- merge(reaches, nodes[, .(reach_id, dist_to_obst1, dist_to_obst2, dist_to_obst3, dist_to_obst4)])
   write_sf(reaches, 
            file.path("data/external", basin_name, "reaches.gpkg"))
   
