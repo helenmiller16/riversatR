@@ -1,9 +1,10 @@
 library(data.table)
 library(Matrix)
 library(RTMB)
+library(sem)
 source(here::here("src_interpolate/functions.R"))
 TIME_INTERVAL <- 8
-VARIABLE <- "fai"
+VARIABLES <- c("fai", "GPP")
 reaches <- sf::read_sf("data/external/mississippi_small/reaches.gpkg")
 reaches <-dplyr::rename(reaches, 
                         reach_id_up = "rch_id_up", 
@@ -12,26 +13,30 @@ reaches$reach_len <- reaches$reach_len / 1000 # convert to km
 reflectance_dt <- fread("data/external/mississippi_small/landsat_2015_10_01-2016_10-01.csv")
 reflectance_dt[, ndti := (red - green)/(red + green)]
 reflectance_dt[, fai  := nir08 - (red + (swir16 - red)*(865-660)/(1600-660))]
-variables = VARIABLE
+metab_dt <- fread("data/external/mississippi_small/metab.csv")
+
 graph <- make_graph(reaches)
 data_ <- make_data(reflectance_dt, 
                   graph, 
-                  variables = variables,
+                  metab_dt = metab_dt,
+                  variables = VARIABLES,
+                  sem = "fai -> GPP",
                   time_interval = TIME_INTERVAL, 
-                  weight_variable = "facc")
+                  weight_variable = "facc", 
+                  scale = "fai")
 time_step_date_map <- data_$time_step_date_map
 data_$time_step_date_map <- NULL
 y_n_t_v <- data_$y_n_t_v
-y_n_t_v[y_n_t_v > 1 | y_n_t_v < -1] <- NA
+# y_n_t_v[, , 1][y_n_t_v[, , 1] > 1 | y_n_t_v[, , 1] < -1] <- NA
 
-data_$y_n_t_v <- y_n_t_v[, , ]
+data_$y_n_t_v <- y_n_t_v[, , , drop = FALSE]
 # data <- c(data_, 
-#           log_gamma1 = 0, 
-#           log_gamma2 = 0)
+#           log_gamma_spacetime = 0, 
+#           log_gamma_space = 0)
 # params <- list(log_theta = -5, 
-#                # log_gamma1 = 0, # spacetime
-#                log_gamma2 = 0, # space only
-#                # log_gamma3 = 0, # time only
+#                # log_gamma_spacetime = 0, # spacetime
+#                log_gamma_space = 0, # space only
+#                # log_gamma_time = 0, # time only
 #                log_sigma = 0, 
 #                mu = 0, 
 #                z_n_t = rnorm(prod(dim(data$y_n_t_v))),
@@ -47,15 +52,28 @@ data_$y_n_t_v <- y_n_t_v[, , ]
 # w_n <- r$`params$w_n`
 
 data <- c(data_)
+# params = list with:
+# log_theta # effect size in P_tailup
+# beta # effect size in P_sem
+# log_rhoT # effect size for time
+# log_sigma # length of the number of parameters (obs error)
+# log_alpha # length of the number of parameters (scales z)
+# log_gamma # length of the number of parameters (scales w)
+# mu # length of the number of parameters
+# w_n # length T*K
+# z_n_t # length T*R*K
 params <- list(log_theta = -5, 
-               log_gamma1 = 0, # spacetime
-               log_gamma2 = 0, # space only
-               # log_gamma3 = 0, # time only
+               beta = 2,
                log_rhoT = -1,
-               log_sigma = -3, 
-               mu = 0, 
+               log_gamma_space = -1, 
+               log_gamma_spacetime = -1, 
+               # vectors same length as variables: 
+               log_v_sem = c(0,0), # variance for different parameters
+               mu = c(.1, 4), 
+               log_sigma = c(-1, 1),
+               # random effects: 
                z_n_t = rnorm(prod(dim(data$y_n_t_v))),
-               w_n = rnorm(dim(data$y_n_t_v)[1])
+               w_n = rnorm(dim(data$y_n_t_v)[1]*dim(data$y_n_t_v)[3])
 )
 
 f <- objective_function(tailup_iter_time,
@@ -73,7 +91,6 @@ opt <- nlminb(obj$par, obj$fn, obj$gr)
 r <- obj$report()
 
 yhat <- r$x_n_t
-yhat <- array(yhat, dim = dim(data$y_n_t_v))
 plot(data$y_n_t_v, yhat)
 abline(0, 1, col= "blue")
 
@@ -124,9 +141,9 @@ yhat1 <- readRDS("data/external/mississippi_small/results/yhat_1.rds")
 yhat2 <- readRDS("data/external/mississippi_small/results/yhat_4.rds")
 # data$y_n_t_v <- y_n_t_v[, 1:5, ,drop = FALSE]
 # params <- list(log_theta = -5, 
-#                log_gamma1 = 0,
-#                log_gamma2 = 0,
-#                log_gamma3 = 0,
+#                log_gamma_spacetime = 0,
+#                log_gamma_space = 0,
+#                log_gamma_time = 0,
 #                log_sigma = 0, 
 #                mu = 0, 
 #                z_n_t = rnorm(prod(dim(data$y_n_t_v))))
@@ -144,13 +161,14 @@ yhat2 <- readRDS("data/external/mississippi_small/results/yhat_4.rds")
 # saveRDS(yhat, "data/external/mississippi_small/results/yhat.rds")
 # plot(data$y_n_t_v[, , 1], yhat)
 # abline(0,1, col = "blue")
-reaches$obs1 <- data$y_n_t_v[, 7]
-reaches$obs2 <- data$y_n_t_v[, 8]
-reaches$obs3 <- data$y_n_t_v[, 9]
-reaches$yhat1 <- yhat[, 7]
-reaches$yhat2 <- yhat[, 8]
-reaches$yhat3 <- yhat[, 9]
-reaches$mean  <- r$w_n
+reaches$obs1 <- data$y_n_t_v[, 7,]
+reaches$obs2 <- data$y_n_t_v[, 8,]
+reaches$obs3 <- data$y_n_t_v[, 9,]
+reaches$yhat1 <- yhat[, 7,2]
+reaches$yhat2 <- yhat[, 8,2]
+reaches$yhat3 <- yhat[, 9,2]
+reaches$mean_fai  <- r$w_n[, , 1]
+reaches$mean_gpp  <- r$w_n[, , 2]
 
 library(ggplot2)
 library(patchwork)
